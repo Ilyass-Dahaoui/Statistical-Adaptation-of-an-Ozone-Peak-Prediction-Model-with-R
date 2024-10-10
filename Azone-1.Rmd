@@ -1,0 +1,1529 @@
+
+
+```{r}
+# Chargement des librairies nécessaires
+library(ggplot2)
+library(tidyverse)
+library(gridExtra)
+library(GGally)
+library(plotly)
+library(corrplot)
+library(reshape2)
+library(FactoMineR) 
+library(factoextra)
+library(glmnet) 
+library(ggfortify)
+library(pROC)
+library(ROCR)
+```
+
+```{r}
+# Lecture des données
+path <- "http://www.math.univ-toulouse.fr/~besse/Wikistat/data/"
+ozone <- read.table(paste(path, "depSeuil.dat", sep = ""),
+                    sep = ",", header = TRUE)
+# Premières lignes du jeu de données
+head(ozone)
+# Vérification du contenu
+summary(ozone)
+     
+
+# Changement du type des variables qualitatives en facteur
+ozone[, "JOUR"] <- as.factor(ozone[, "JOUR"])
+ozone[, "STATION"] <- as.factor(ozone[, "STATION"])
+     
+
+# Vérification dans le summary
+summary(ozone)
+
+```
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+g1<-ggplot(ozone,aes(x=O3obs))+
+  geom_histogram(aes(y=after_stat(density)))+
+  geom_density(alpha=.2, col="blue") 
+g2<-ggplot(ozone,aes(x=NO2))+
+  geom_histogram(aes(y=..density..))+
+  geom_density(alpha=.2, col="blue") 
+
+grid.arrange(g1,g2,ncol=2)
+```
+
+
+```{r}
+g3<-ggplot(ozone,aes(x=MOCAGE))+geom_histogram(aes(y=..density..))+geom_density(alpha=.2, col="blue") 
+g4<-ggplot(ozone,aes(x=TEMPE))+geom_histogram(aes(y=..density..))+geom_density(alpha=.2, col="blue") 
+g5<-ggplot(ozone,aes(x=RMH2O))+geom_histogram(aes(y=..density..))+geom_density(alpha=.2, col="blue") 
+g6<-ggplot(ozone,aes(x=NO))+geom_histogram(aes(y=..density..))+geom_density(alpha=.2, col="blue") 
+g7<-ggplot(ozone,aes(x=VentMOD))+geom_histogram(aes(y=..density..))+geom_density(alpha=.2, col="blue") 
+g8<-ggplot(ozone,aes(x=VentANG))+geom_histogram(aes(y=..density..))+geom_density(alpha=.2, col="blue") 
+
+grid.arrange(g3,g4,g5,g6,g7,g8,ncol=3)
+rm(g1,g2,g3,g4,g5,g6,g7,g8)
+```
+
+Transformations de variables
+
+```{r}
+ozone[, "SRMH2O"] <- sqrt(ozone[, "RMH2O"])
+ozone[, "LNO2"] <- log(ozone[, "NO2"])
+ozone[, "LNO"] <- log(ozone[, "NO"])
+
+```
+
+
+```{r}
+ozone <- ozone[, c(1:4, 8:13)]
+```
+
+
+```{r}
+ozone[, "DepSeuil"] <- as.factor(ozone[, "O3obs"] > 150)
+summary(ozone)
+```
+
+
+```{r}
+ggpairs(ozone[, c(2:4, 6:10)])
+```
+
+```{r}
+library(corrplot)
+corrplot(cor(ozone[, c(2:4, 6:10)]),method="ellipse")
+     
+```
+
+Analyse en composantes principales
+
+```{r}
+# ACP réduite
+library(FactoMineR)
+acp <- PCA(ozone[, c(11,2:4, 6:10)], scale.unit = TRUE,
+           graph = FALSE, quali.sup = 1, quanti.sup = 2, ncp = 7)
+# Décroissance des valeurs propres
+library(factoextra)
+g1<-fviz_eig(acp, addlabels = TRUE, ylim = c(0, 40))
+library(reshape2)
+g2<-ggplot(melt(acp$ind$coord),aes(x=Var2,y=value))+
+  geom_boxplot()+
+  xlab("")
+grid.arrange(g1,g2,ncol=2)
+library(corrplot)
+acpcor <- cor(acp$var$coord)
+corrplot(acpcor, is.corr=FALSE,method="ellipse")
+```
+
+
+```{r}
+fviz_pca_var(acp)
+fviz_pca_ind(acp,col.ind="contrib",label="none",gradient.cols = c("white", "#2E9FDF", "#FC4E07" ))
+fviz_pca_var(acp,axes=c(1,3))
+fviz_pca_ind(acp,col.ind="contrib",label="none",gradient.cols = c("white", "#2E9FDF", "#FC4E07" ),axes=c(1,3))
+```
+
+
+```{r}
+fviz_pca_ind(acp, label="none", habillage=1)
+```
+
+Clustering:
+
+```{r}
+km.ozone <- kmeans(ozone[, c(3:4, 6:10)], centers = 2)
+# Représentation dans les coordonnées de l'acp
+acp2 <- PCA(cbind(clus = as.factor(km.ozone$cluster),
+          ozone[, c(11, 3:4, 6:10)]), scale.unit = TRUE,
+          graph = FALSE, quali.sup = 1:2, ncp = 7)
+fviz_pca_ind(acp2, label="none", habillage="clus")
+```
+
+Protocole de comparaison
+
+```{r}
+set.seed(120) # initialisation du générateur
+# Extraction des échantillons
+test.ratio <- .2   # part de l'échantillon test
+npop <- nrow(ozone) # nombre de lignes dans les données
+nvar <- ncol(ozone) # nombre de colonnes
+# taille de l'échantillon test
+ntest <- ceiling(npop * test.ratio) 
+# indices de l'échantillon test
+testi <- sample(1:npop, ntest)
+# indices de l'échantillon d'apprentissage
+appri <- setdiff(1:npop, testi) 
+```
+
+Construction des échantillons pour la régression: prévision de la concentration en ozone.
+
+
+```{r}
+# construction de l'échantillon d'apprentissage
+datappr <- ozone[appri, -11] 
+# construction de l'échantillon test
+datestr <- ozone[testi, -11] 
+# vérification
+str(datappr)
+str(datestr)
+summary(datappr) 
+     
+```
+
+Construction des échantillons pour la discrimination: prévision de dépassement.
+
+
+```{r}
+# construction de l'échantillon d'apprentissage
+datappq <- ozone[appri,-2]
+# construction de l'échantillon test 
+datestq <- ozone[testi,-2] 
+
+# vérification
+str(datappq)
+str(datestq)
+summary(datappq)
+```
+
+gplot.res <- function(x, y, titre = "titre"){
+    ggplot(data.frame(x=x, y=y),aes(x,y))+
+une fonction traçant le graphe des résidus avec des couleurs et des échelles fixes sur les axes.
+```{r}
+# Définir le titre
+titre <- "Résidus en relation avec les valeurs prédites"
+
+# Création du graphique
+ggplot(data = NULL, aes(x = fit_lm, y = res_1m)) +
+    geom_point(color = "blue") +  # Correction: 'color' au lieu de 'col'
+    xlim(0, 250) +
+    ylim(-150, 150) +
+    ylab("Résidus") +
+    xlab("Valeurs prédites") +
+    ggtitle(titre) +  # Utilisation de la variable 'titre'
+    geom_hline(yintercept = 0, color = "green")  # Correction: 'color' au lieu de 'col'
+
+
+```
+
+
+Prévision par modèle linéaire Gaussien
+
+```{r}
+# estimation du modèle sans interaction
+reg.lm <-aov(O3obs ~ . , data = datappr)
+# Extraction des résidus et des valeurs ajustées de ce modèle
+res.lm <- reg.lm$residuals
+fit.lm <- reg.lm$fitted.values
+# Graphe des résidus. 
+gplot.res(fit.lm,res.lm,"ANCOVA sans sélection de variables")
+
+```
+
+
+```{r}
+# Estimation du modèle sans interaction
+reg.lm <- aov(O3obs ~ ., data = datappr)
+
+# Extraction des résidus et des valeurs ajustées
+res.lm <- residuals(reg.lm)   # Résidus
+fit.lm <- fitted(reg.lm)      # Valeurs ajustées
+
+# Graphe des résidus par rapport aux valeurs ajustées
+library(ggplot2)
+
+ggplot(data = data.frame(Fitted = fit.lm, Residuals = res.lm), aes(x = Fitted, y = Residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "ANCOVA sans sélection de variables", x = "Valeurs ajustées", y = "Résidus") +
+  theme_minimal()
+
+```
+
+```{r}
+summary(reg.lm)
+```
+
+
+```{r}
+coef(reg.lm)
+```
+
+
+```{r}
+# Graphe des résidus du modèle déterministe MOCAGE
+g1<-gplot.res(datappr[, "MOCAGE"],datappr[, "O3obs"]-datappr[, "MOCAGE"], "linéaire, MOCAGE seul")
+
+g2<-gplot.res(fit.lm, res.lm, "Linéaire, sans sélection")
+grid.arrange(g1,g2,ncol=2)
+     
+```
+Sélection de variable par régularisation L1 (LASSO)
+
+
+```{r}
+
+library(glmnet)
+# avec des variables quantitatives seulement
+reg.lasso.quanti <- glmnet(y = datappr[, 2],
+                           x = as.matrix(datappr[, -c(1, 2, 5)]))
+# avec toutes les variables, créer d'abord la matrice d'expériences 
+# avec 'model.matrix' (penser à retirer l'intercept du modèle)
+x.mat <- model.matrix(O3obs ~ . - 1, data = datappr)
+reg.lasso <- glmnet(y = datappr$O3obs, x = x.mat)
+options(repr.plot.width = 12, repr.plot.height = 10)
+plot(reg.lasso, xvar = "lambda", label = TRUE)
+legend("topright", 
+       legend = paste(1:ncol(x.mat), " - ", colnames(x.mat)))
+
+```
+
+
+```{r}
+head(x.mat)
+```
+
+
+```{r}
+reg.lasso.cv <- cv.glmnet(y = datappr[, 2], x = x.mat)
+plot(reg.lasso.cv)
+autoplot(reg.lasso.cv)
+```
+```{r}
+library(glmnet)
+help(cv.glmnet)
+```
+
+
+```{r}
+# valeur estimée
+paste("CV estimate of lambda :", round(reg.lasso.cv$lambda.1se, 3))
+# modèle correspondant
+coef(reg.lasso.cv, s = "lambda.1se")
+```
+
+
+```{r}
+
+plot(reg.lasso, xvar = "lambda", label = TRUE,xlim=c(0,2),ylim=c(-2,5))
+abline(v=log(reg.lasso.cv$lambda.1se),col="red")
+     
+```
+
+
+```{r}
+
+# valeur estimée
+paste("CV estimate of lambda :", round(reg.lasso.cv$lambda.min, 3))
+# modèle correspondant
+coef(reg.lasso.cv, s = "lambda.min")
+
+plot(reg.lasso, xvar = "lambda", label = TRUE,xlim=c(-2,0),ylim=c(-5,40))
+abline(v=log(reg.lasso.cv$lambda.min),col="red")
+```
+
+
+```{r}
+# Extraction des valeurs ajustées et des résidus
+
+fit.lasso <- predict(reg.lasso.cv, s = "lambda.min", newx = x.mat)
+res.lasso <- datappr$O3obs - fit.lasso
+
+fit.lasso.1se <- predict(reg.lasso.cv, s = "lambda.1se", newx = x.mat)
+res.lasso.1se <- datappr$O3obs - fit.lasso.1se 
+
+# Graphe des résidus
+options(repr.plot.width = 12, repr.plot.height = 4)
+par(mfrow = c(1, 3))
+gplot.res(fit.lm, res.lm, "Lineair, without selection")
+gplot.res(fit.lasso, res.lasso, "Linear, with Lasso, lambda min")
+gplot.res(fit.lasso.1se, res.lasso.1se, "Linear,with lasso, lambda 1se") 
+```
+```{r}
+# Predicted values for the unregularized model (linear model without LASSO)
+pred_no_selection <- predict(reg.lm, newdata = datappr)
+
+# Residuals for the unregularized model
+residuals_no_selection <- datappr$O3obs - pred_no_selection
+
+# MSE for the unregularized model
+mse_no_selection <- mean(residuals_no_selection^2)
+
+# Output the MSE
+print(paste("MSE (without selection):", mse_no_selection))
+
+```
+```{r}
+# Predicted values for the LASSO model with lambda.min
+pred_lasso_min <- predict(reg.lasso.cv, s = "lambda.min", newx = x.mat)
+
+# Residuals for the LASSO model with lambda.min
+residuals_lasso_min <- datappr$O3obs - pred_lasso_min
+
+# MSE for the LASSO model with lambda.min
+mse_lasso_min <- mean(residuals_lasso_min^2)
+
+# Output the MSE
+print(paste("MSE (LASSO, lambda.min):", mse_lasso_min))
+
+```
+
+
+```{r}
+# Predicted values for the LASSO model with lambda.1se
+pred_lasso_1se <- predict(reg.lasso.cv, s = "lambda.1se", newx = x.mat)
+
+# Residuals for the LASSO model with lambda.1se
+residuals_lasso_1se <- datappr$O3obs - pred_lasso_1se
+
+# MSE for the LASSO model with lambda.1se
+mse_lasso_1se <- mean(residuals_lasso_1se^2)
+
+# Output the MSE
+print(paste("MSE (LASSO, lambda.1se):", mse_lasso_1se))
+
+```
+
+
+```{r}
+paste("Modèle linéaire sans sélection:",mean(res.lm^2))
+paste("LASSO avec lambda.min:",mean(res.lasso^2))
+paste("LASSO avec lambda.1se:",mean(res.lasso.1se^2))
+```
+```{r}
+V=10 ; nV=floor(nrow(datappr)/V)
+S=sample(1:nrow(datappr),replace=FALSE)
+error.CV = c()
+for(v in 1:V)
+{ # Rq : les deux dernières obs sont tjs dans l'échantillon d'apprentissage...
+    datappr.learn=datappr[-c(S[(nV*(v-1)):(nV*v)]),] 
+    datappr.valid=datappr[c(S[(nV*(v-1)):(nV*v)]),]
+    error.CV=c(error.CV,mean((datappr.valid$O3obs-predict(aov(O3obs ~ ., data=datappr.learn),newdata=datappr.valid))^2))
+}
+mean(error.CV)
+
+print(reg.lasso.cv)
+```
+
+Modèle quadratique:
+
+Sélection de variables par critère AIC
+
+```{r}
+# Estimation du modèle avec toutes les interactions d'ordre 2
+reg.glm <- glm(O3obs ~ .^2, data = datappr)
+# Recherche du meilleur modèle au sens 
+# du critère d'Akaïke par méthode descendante
+reg.glm.step <- step(reg.glm, direction = "backward")
+```
+
+
+```{r}
+# Coefficients du modèle
+anova(reg.glm.step, test = "F")
+```
+Sélection de variable par régularisation L1 (LASSO)
+
+
+```{r}
+# Comparer avec un modèle quadratique avec pénalité L1
+x.mat2 <- model.matrix(O3obs ~ .^2 - 1, data = datappr)
+reg.lasso2.cv <- cv.glmnet(y = datappr[, "O3obs"], x = x.mat2)
+coef(reg.lasso2.cv, s = "lambda.1se")
+```
+
+
+
+```{r}
+# Extraction des valeurs ajustées et des résidus
+fit.glm <- fitted(reg.glm.step)  # Récupération des valeurs ajustées du modèle GLM
+res.glm <- residuals(reg.glm.step)  # Extraction des résidus du modèle GLM
+
+fit.lasso2 <- predict(reg.lasso2.cv, s = "lambda.min", newx = x.mat2)  # Prédictions pour LASSO
+res.lasso2 <- datappr$O3obs - fit.lasso2  # Calcul des résidus pour LASSO
+
+# Graphe des résidus
+g1 <- gplot.res(fit.lm, res.lm, "Linéaire")  # Résidus pour le modèle linéaire
+g2 <- gplot.res(fit.lasso, res.lasso, "Linéaire, pénalité L1")  # Résidus pour LASSO linéaire
+g3 <- gplot.res(fit.glm, res.glm, "Quadratique, backward AIC")  # Résidus pour le modèle GLM quadratique
+g4 <- gplot.res(fit.lasso2, res.lasso2, "Quadratique, pénalité L1")  # Résidus pour LASSO quadratique
+
+# Affichage des graphiques dans une grille
+grid.arrange(g1, g2, g3, g4, ncol = 2, nrow = 2)
+
+
+```
+
+Prévision de l'échantillon test
+Erreur de régression
+
+```{r}
+# Calcul des prévisions pour le modèle quadratique backward AIC
+pred.glm <- predict(reg.glm.step, newdata = datestr)
+# Erreur quadratique moyenne de prévision (MSE)
+sum((pred.glm - datestr[, "O3obs"])^2) / nrow(datestr)
+```
+
+
+```{r}
+# Erreur quadratique par MOCAGE
+sum((datestr[,"MOCAGE"] - datestr[,"O3obs"])^2) / nrow(datestr)
+```
+Erreur de classification (matrice de confusion)
+
+```{r}
+# Matrice de confusion pour la prévision du dépassement de seuil
+table(pred.glm > 150, datestr[, "O3obs"] > 150)
+```
+
+
+```{r}
+# Matrice de confusion pour la prévision du 
+# dépassement de seuil par MOCAGE
+table(datestr[, "MOCAGE"] > 150, datestr[, "O3obs"] > 150)
+```
+
+Prévision par modèle binomial
+Régression logistique sans interaction
+
+```{r}
+
+# estimation du modèle complet
+log.lm <- glm(DepSeuil ~. , data = datappq, family = binomial)
+# significativité des paramètres
+anova(log.lm, test = "Chisq")
+```
+
+
+```{r}
+# Recherche d'un modèle optimal au sens d'Akaïke
+log.lm.step <- step(log.lm, direction = "backward")
+```
+
+
+```{r}
+# Modèle obtenu
+anova(log.lm.step, test = "Chisq")
+```
+
+
+```{r}
+# matrice de confusion de l'échantillon d'apprentissage et erreur apparente
+table(log.lm.step$fitted.values > 0.5, datappq[, "DepSeuil"])
+```
+
+Régression logistique avec interactions
+
+```{r}
+# régression avec le modèle minimum
+log.qm <- glm(DepSeuil ~ 1, data = datappq,family = binomial)
+# algorithme stepwise en précisant le plus grand 
+# modèle possible
+log.qm.step1 <- step(log.qm, direction = "both",
+    scope = list(lower = ~1, upper = ~(JOUR + MOCAGE + TEMPE + 
+            STATION + VentMOD + VentANG + LNO2 + LNO + SRMH2O)^2), 
+    family=binomial)
+     
+
+```
+
+
+```{r}
+anova(log.qm.step1, test = "Chisq")
+
+```
+
+Prévision de l'échantillon test
+Matrice de confusion
+```{r}
+# Prévision du modèle quadratique
+pred.log <- predict(log.qm.step1, newdata = datestq, type = "response")
+# Matrice de confusion pour la prévision du 
+# dépassement de seuil
+table(pred.log > 0.5, datestq[, "DepSeuil"])
+```
+
+Courbe ROC
+
+```{r}
+options(repr.plot.width = 6, repr.plot.height = 6)
+par(mfrow = c(1, 1))
+rocmocage <- datestr[,  "MOCAGE"] / 300 
+DepSeuil=c(datestr[, "O3obs"] > 150)
+predmocage <- prediction(rocmocage,DepSeuil)
+perfmocage <- performance(predmocage, "tpr", "fpr")
+
+
+rocglm <- pred.glm / 300    
+predglm <- prediction(rocglm,DepSeuil)
+perfglm <- performance(predglm, "tpr", "fpr")
+
+roclogit <- predict(log.qm.step1, newdata = datestq, type="response")
+predlogit <- prediction(roclogit, datestq[, "DepSeuil"])
+perflogit <- performance(predlogit, "tpr", "fpr")
+
+plot(perfglm, col = "blue",lty=2, main = "Courbe ROC \n Mod. quad. backward AIC ")
+plot(perfmocage,col="orange",lty=2,add=TRUE)
+plot(perflogit,col="green",lty=1,add=TRUE) 
+
+legend("right", legend=c("Mod. Quad. backward AIC", "Mocage", "Logit"),
+       col=c("blue","orange","green"), lty=c(2,2,1), text.font=1,    cex=0.8)
+```
+Analyse discriminante, kNN, SVM
+Estimation des modèles
+
+
+```{r}
+
+library(MASS) # chargement des librairies
+library(class) # pour kNN
+```
+
+
+```{r}
+# analyse discriminante linéaire
+disc.lda=lda(DepSeuil~.,data=datappq[,-4]) 
+# analyse discriminante quadratique 
+disc.qda=qda(DepSeuil~.,data=datappq[,-4]) 
+# k plus proches voisins
+disc.knn=knn(datappq[,c(-4,-10)],datappq[,c(-4,-10)],datappq$DepSeuil,k=10)
+```
+
+
+```{r}
+library(caret)
+lda.fit<-train(DepSeuil~.,data=datappq[,-4],method="lda")
+qda.fit<-train(DepSeuil~.,data=datappq[,-4],method="qda")
+knn.fit<-train(DepSeuil~.,data=datappq[,-4],method="knn")
+```
+Estimation de l'erreur de prévision par validation croisée
+Sans utiliser la librairie caret
+
+```{r}
+
+# erreur par validation croisée  en analyse discriminante linéaire
+disc.lda=lda(DepSeuil~.,data=datappq[,-4],CV=T) 
+# estimer le taux d'erreur à partir de la matrice de confusion
+table(datappq[,"DepSeuil"],disc.lda$class)  
+
+```
+
+
+```{r}
+# analyse discriminante quadratique
+disc.qda=qda(DepSeuil~.,data=datappq[,-4],CV=T)  
+table(datappq[,"DepSeuil"],disc.qda$class)
+```
+
+
+```{r}
+
+# k plus proches voisins: optimisation de k
+library(e1071)
+plot(tune.knn(as.matrix(datappq[,c(-4,-10)]),as.factor(datappq[,10]),k=2:20))
+```
+
+Avec la librairie caret
+
+```{r}
+# Validation croisée avec 10 folds
+param_train<-trainControl(method="cv",number=10)
+# erreur par validation croisée  en analyse discriminante linéaire
+lda.fit <- train(DepSeuil~.,data=datappq[,-4],method="lda",trControl=param_train)
+# estimer le taux d'erreur à partir de la matrice de confusion
+table(datappq[,"DepSeuil"],predict(lda.fit,datappq[,-c(4,10)])) 
+
+```
+
+
+```{r}
+# erreur par validation croisée  en analyse discriminante quadratique
+qda.fit <- train(DepSeuil~.,data=datappq[,-4],method="qda",trControl=param_train)
+# estimer le taux d'erreur à partir de la matrice de confusion
+table(datappq[,"DepSeuil"],predict(qda.fit,datappq[,-c(4,10)])) 
+```
+
+
+```{r}
+# erreur par validation croisée  en kNN
+knn.fit <- train(DepSeuil~.,data=datappq[,-4],method="knn",trControl=param_train,tuneLength=20)
+# estimer le taux d'erreur à partir de la matrice de confusion
+table(datappq[,"DepSeuil"],predict(knn.fit,datappq[,-c(4,10)])) 
+```
+Prévision de l'échantillon test
+Matrices de confusion
+```{r}
+## méthode LDA
+table(predict(lda.fit,datestq[,-4]),datestq[,"DepSeuil"])
+sum(predict(lda.fit,datestq[,-4])!=datestq[,"DepSeuil"])/nrow(datestq)
+```
+
+
+```{r}
+
+## méthode QDA
+table(predict(qda.fit,datestq[,-4]),datestq[,"DepSeuil"])
+sum(predict(qda.fit,datestq[,-4])!=datestq[,"DepSeuil"])/nrow(datestq)
+```
+
+
+```{r}
+## méthode KNN
+table(predict(knn.fit,datestq[,-4]),datestq[,"DepSeuil"])
+sum(predict(knn.fit,datestq[,-4])!=datestq[,"DepSeuil"])/nrow(datestq)
+```
+
+
+```{r}
+confusionMatrix(predict(knn.fit,datestq[,-4]),datestq[,"DepSeuil"],positive="TRUE")
+
+```
+
+Courbes ROC 
+
+```{r}
+# code de l'épisode 1 pour la régression logistique
+log.qm <- glm(DepSeuil ~ 1, data = datappq,family = binomial)
+log.qm.step1 <- step(log.qm, direction = "both",
+    scope = list(lower = ~1, upper = ~(JOUR + MOCAGE + TEMPE + 
+            STATION + VentMOD + VentANG + LNO2 + LNO + SRMH2O)^2), 
+    family=binomial,trace=0)
+     
+```
+
+
+```{r}
+library(pROC)
+rocobjlda<-roc(datestq$DepSeuil,predict(lda.fit,datestq[,-4],type="prob")[,2])
+rocobjqda<-roc(datestq$DepSeuil,predict(qda.fit,datestq[,-4],type="prob")[,2])
+rocobjknn<-roc(datestq$DepSeuil,predict(knn.fit,datestq[,-4],type="prob")[,2])
+rocobjlogit<-roc(datestq[, "DepSeuil"],predict(log.qm.step1, newdata = datestq, type="response"))
+
+options(repr.plot.width = 10, repr.plot.height = 8)
+ggroc(list(lda=rocobjlda,qda=rocobjqda,knn=rocobjknn,logit=rocobjlogit),legacy.axes=T)+
+  xlab("False Positive Rate")+
+  ylab("True Positive Rate")
+```
+Séparateur à Vaste Marge (SVM)
+Régression
+
+```{r}
+library(e1071)
+
+svm.reg0 = svm(O3obs ~ ., data = datappr)
+summary(svm.reg0)
+#set.seed(2021)
+svm.reg.tune = tune.svm(O3obs ~ ., data = datappr, cost = c(1, 1.5, 2, 2.5, 3, 3.5), 
+    gamma = seq(0.02, 0.1, by = 0.02))
+plot(svm.reg.tune)
+```
+
+
+```{r}
+# calcul et graphe des résidus
+fit.svmr=fit.svmr=svm.reg$fitted
+res.svmr=fit.svmr-datappr[,"O3obs"]
+gplot.res(fit.svmr,res.svmr,titre="")
+```
+
+Discrimination
+
+```{r}
+# optimisation
+svm.dis.tune = tune.svm(DepSeuil ~ ., data = datappq, cost = c(1,1.25,1.5,1.75,2), 
+    gamma = seq(0.02, 0.1, by = 0.02))
+plot(svm.dis.tune)
+```
+```{r}
+
+```
+
+```{r}
+# apprentissage
+svm.dis.tune$best.parameters
+svm.dis=svm(DepSeuil~.,data=datappq,cost = svm.reg.tune$best.parameters$cost, 
+    gamma = svm.reg.tune$best.parameters$gamma)
+```
+Prévision de l'échantillon test
+Erreur de régression
+
+```{r}
+pred.svmr=predict(svm.reg,newdata=datestr)
+# Erreur quadratique moyenne de prévision
+sum((pred.svmr-datestr[,"O3obs"])^2)/nrow(datestr)
+
+```
+Erreur de classification (matrices de confusion)
+
+```{r}
+# Matrice de confusion pour la prévision du dépassement de seuil (régression)
+table(pred.svmr>150,datestr[,"O3obs"]>150)
+```
+
+
+```{r}
+
+# Même chose pour la discrimination
+pred.svmq=predict(svm.dis,newdata=datestq)
+table(pred.svmq,datestq[,"DepSeuil"])
+```
+Courbes ROC
+
+
+```{r}
+rocsvmr = pred.svmr/300
+predsvmr = prediction(rocsvmr, datestq$DepSeuil)
+perfsvmr = performance(predsvmr, "tpr", "fpr")
+# re-estimer le modèle pour obtenir des probabilités de classe plutôt que des
+# classes
+svm.dis = svm(DepSeuil ~ ., data = datappq, cost = 1.25, probability = TRUE)
+pred.svmq = predict(svm.dis, newdata = datestq, probability = TRUE)
+rocsvmq = attributes(pred.svmq)$probabilities[, 2]
+predsvmq = prediction(rocsvmq, datestq$DepSeuil)
+perfsvmq = performance(predsvmq, "tpr", "fpr")
+# tracer les courbes ROC en les superposant pour mieux comparer
+plot(perflogit, col = "blue")
+plot(perfsvmr, col = "red", lty = 2, add = TRUE)
+plot(perfsvmq, col = "green", add = TRUE)
+
+
+legend("right", legend=c("Logit","SVR", "SVM"),
+       col=c("blue","red","green"), lty=c(1,2,1), text.font=1,    cex=0.8)
+
+```
+CART, Agrégation de modèles
+Arbre de décision binaire (CART)
+Estimation et élagage de l'arbre de régression
+
+```{r}
+
+library(rpart) 
+
+```
+
+
+
+```{r}
+tree.reg=rpart(O3obs~.,data=datappr,control=rpart.control(cp=0.001))
+```
+
+
+```{r}
+library(rpart.plot)
+options(repr.plot.width = 15, repr.plot.height = 10)
+rpart.plot(tree.reg)
+```
+
+
+```{r}
+help(xpred.rpart)
+xmat<-xpred.rpart(tree.reg,xval=10) 
+# one row for each observation and one column for each complexity value
+
+# Cross-validation error par valeur de CP
+CVerr<-apply((xmat-datappr[,"O3obs"])^2,2,sum)
+
+plotcp(tree.reg)
+
+```
+
+
+```{r}
+as.numeric(attributes(which.min(CVerr))$names)
+tree.reg=rpart(O3obs~.,data=datappr,control=rpart.control(cp=as.numeric(attributes(which.min(CVerr))$names)))
+rpart.plot(tree.reg,type=5,extra=101)
+```
+
+
+```{r}
+library(partykit)
+plot(as.party(tree.reg), type="simple")
+```
+
+
+```{r}
+
+fit.tree=predict(tree.reg)
+res.tree=fit.tree-datappr[,"O3obs"]
+gplot.res(fit.tree,res.tree,"residus de tree.reg")
+
+
+```
+
+
+
+
+```{r}
+ctrl <- trainControl(method = "cv",number = 10)
+treecaret <- train(O3obs~.,data=datappr,method = "rpart",trControl = ctrl,tuneLength =20)
+print(paste("Valeur de cp retenue = ",treecaret$bestTune,sep=""))
+rpart.plot(treecaret$finalModel)
+```
+Estimation et élagage d'un arbre de discrimination
+
+```{r}
+tree.dis=rpart(DepSeuil~.,data=datappq,parms=list(split="information"),cp=0.001)
+rpart.plot(tree.dis) 
+```
+
+
+```{r}
+xmat = xpred.rpart(tree.dis)
+# Comparaison des valeurs prédite et observée
+xerr=datappq$DepSeuil!= (xmat>1.5) 
+# Calcul  des estimations des taux d'erreur
+CVerr=apply(xerr, 2, sum)/nrow(xerr)
+CVerr
+```
+
+
+```{r}
+
+tree.dis=rpart(DepSeuil~.,data=datappq,parms=list(split="information"),cp=as.numeric(attributes(which.min(CVerr))$names))
+rpart.plot(tree.dis,type=4)
+```
+
+
+```{r}
+ctrl <- trainControl(method = "cv",number = 10)
+treecaret <- train(DepSeuil~.,data=datappq,method = "rpart",trControl = ctrl,tuneLength =20,metric="Accuracy")
+print(paste("Valeur de cp retenue = ",treecaret$bestTune,sep=""))
+rpart.plot(treecaret$finalModel)
+```
+Prévision de l'échantillon test
+Erreur de régression
+
+```{r}
+# Calcul des prévisions
+pred.treer=predict(tree.reg,newdata=datestr)
+# Erreur quadratique moyenne de prévision en régression
+sum((pred.treer-datestr[,"O3obs"])^2)/nrow(datestr)
+```
+
+Erreur de classification (matrice de confusion)
+
+```{r}
+# Matrice de confusion pour la prévision du 
+# dépassement de seuil (régression)
+  #table(pred.treer>150,datestr[,"O3obs"]>150)
+confusionMatrix(as.factor(pred.treer>150),as.factor(datestr[,"O3obs"]>150))$table
+```
+
+
+```{r}
+# Même chose pour l'arbre de discrimination
+pred.treeq=predict(tree.dis,newdata=datestq,type="class")
+  #table(pred.treeq,datestq[,"DepSeuil"])
+confusionMatrix(pred.treeq,datestq[,"DepSeuil"])$table
+```
+Courbes ROC
+
+```{r}
+ROCregtree=pred.treer/300
+predregtree=prediction(ROCregtree,datestq$DepSeuil)
+perfregtree=performance(predregtree,"tpr","fpr")
+ROCdistree=predict(tree.dis,newdata=datestq,type="prob")[,2]
+preddistree=prediction(ROCdistree,datestq$DepSeuil)
+perfdistree=performance(preddistree,"tpr","fpr")
+# tracer les courbes ROC en les superposant 
+# pour mieux comparer
+
+options(repr.plot.width = 8, repr.plot.height = 6)
+plot(perflogit,col="blue")
+plot(perfregtree,col="orange",lty=2,add=TRUE) 
+plot(perfdistree,col="green",add=TRUE)  
+
+legend("right", legend=c("Logit", "TreeReg", "TreeDis"),
+       col=c("blue","orange","green"), lty=c(1,2,1), text.font=1,    cex=0.8)
+```
+
+Agrégation de modèles
+
+
+
+
+```{r}
+install.packages("randomForest")
+```
+
+
+```{r}
+library(randomForest)
+
+
+
+```
+
+Régression
+
+```{r}
+rf.reg=randomForest(O3obs~., data=datappr,xtest=datestr[,-2],ytest=datestr[,"O3obs"],
+   ntree=500,do.trace=50,importance=TRUE)
+attributes(rf.reg)
+rf.reg$mtry
+
+```
+
+
+```{r}
+fit.rfr=rf.reg$predicted
+res.rfr=fit.rfr-datappr[,"O3obs"]
+gplot.res(fit.rfr,res.rfr,titre="")
+```
+Discrimination
+
+```{r}
+rf.dis=randomForest(DepSeuil~.,data=datappq,xtest=datestq[,-10],ytest=datestq[,
+   "DepSeuil"],ntree=500,do.trace=50,importance=TRUE)
+rf.dis$importance
+     
+```
+
+Importance des variables
+
+```{r}
+sort(round(importance(rf.reg), 2)[,1], decreasing=TRUE)
+sort(round(importance(rf.dis), 2)[,4], decreasing=TRUE)
+
+```
+
+
+```{r}
+varImpPlot(rf.reg)
+
+```
+
+
+```{r}
+varImpPlot(rf.dis)
+
+```
+
+
+```{r}
+library(ggRandomForests)
+plot(gg_vimp(rf.reg))
+plot(gg_vimp(rf.dis))
+```
+Prévision de l'échantillon test
+
+En régression
+
+```{r}
+# Forêts aléatoires
+pred.rfr=rf.reg$test$predicted
+# Erreur quadratique moyenne de prévision
+sum((pred.rfr-datestr[,"O3obs"])^2)/nrow(datestr)
+```
+
+
+```{r}
+# Forêts aléatoires
+# Matrice de confusion pour la prévision du 
+# dépassement de seuil (régression)
+table(pred.rfr>150,datestr[,"O3obs"]>150)
+```
+
+En classification
+
+```{r}
+pred.rfq=rf.dis$test$predicted
+table(pred.rfq,datestq[,"DepSeuil"])
+confusionMatrix(pred.rfq,datestq[,"DepSeuil"],positive="TRUE")
+
+```
+Boosting
+
+Régression
+
+```{r}
+class(ozone$STATION)
+
+```
+
+
+```{r}
+library(gbm)
+boost.reg = gbm(O3obs ~ ., data = datappr, distribution = "gaussian", n.trees = 500, 
+    cv.folds = 10, n.minobsinnode = 5, shrinkage = 0.03, verbose = FALSE)
+# fixer verbose à FALSE pour éviter trop de sorties
+plot(boost.reg$cv.error, type = "l")
+```
+
+
+```{r}
+# nombre optimal d'itérations par valiation croisée
+best.iter=gbm.perf(boost.reg,method="cv")
+```
+
+
+```{r}
+
+test=numeric()
+for (i in 10:500){
+pred.test=predict(boost.reg,newdata=datestr,n.trees=i)
+err=sum((pred.test-datestr[,"O3obs"])^2)/nrow(datestr)
+test=c(test,err)}
+plot(10:500,test,type="l")
+abline(v=best.iter)
+     
+```
+Discrimination
+
+
+```{r}
+
+datappq2=datappq
+datappq2[,"DepSeuil"]=as.numeric(datappq[,"DepSeuil"])-1
+boost.dis=gbm(DepSeuil~.,data=datappq2,distribution="adaboost",n.trees=500, cv.folds=10,
+              n.minobsinnode = 5,shrinkage=0.03,verbose=FALSE)
+plot(boost.dis$cv.error,type="l")
+```
+
+
+```{r}
+# nombre optimal d'itérations 
+best.ited=gbm.perf(boost.dis,method="cv")
+```
+```{r}
+fit.boostr=boost.reg$fit
+res.boostr=fit.boostr-datappr[,"O3obs"]
+gplot.res(fit.boostr,res.boostr,titre="")
+```
+
+Prévision de l'échantillon test
+Erreur de régression
+
+```{r}
+pred.boostr=predict(boost.reg,newdata=datestr,n.trees=best.iter)
+# Erreur quadratique moyenne de prévision
+sum((pred.boostr-datestr[,"O3obs"])^2)/nrow(datestr)
+     
+```
+Erreur de classification (matrices de confusion)
+
+
+```{r}
+# Matrice de confusion pour la prévision 
+# du dépassement de seuil (régression)
+table(pred.boostr>150,datestr[,"O3obs"]>150)
+```
+
+
+```{r}
+# Même chose pour la discrimination
+pred.boostd=predict(boost.dis,newdata=datestq,n.trees=best.ited)
+table(as.factor(sign(pred.boostd)),datestq[,"DepSeuil"])
+
+```
+Courbes ROC
+
+
+```{r}
+
+# Forêts aléatoires
+rocrfr=pred.rfr/300
+predrfr=prediction(rocrfr,datestq$DepSeuil)
+perfrfr=performance(predrfr,"tpr","fpr")
+
+# Boosting
+rocbstr=pred.boostr/300
+predbstr=prediction(rocbstr,datestq$DepSeuil)
+perfbstr=performance(predbstr,"tpr","fpr")
+
+# tracer les courbes ROC en les superposant 
+# pour mieux comparer
+plot(perflogit,col="blue")
+plot(perfrfr,col="purple",lty=2,add=TRUE)  
+plot(perfbstr,col="green",add=TRUE) 
+
+legend("right", legend=c("Logit","RF", "Boosting"),
+       col=c("blue","purple","green"), lty=c(1,2,1), text.font=1,    cex=0.8)
+```
+Réseaux de neurones
+Cas de la régression
+
+```{r}
+library(MASS)
+library(nnet)
+# apprentissage
+# attention au paramètre linout dans le cas de la régression
+nnet.reg=nnet(O3obs~.,data=datappr,size=5,decay=1,linout=TRUE,maxit=500) 
+summary(nnet.reg)
+```
+```{r}
+library(e1071)
+plot(tune.nnet(O3obs~.,data=datappr,size=c(2,3,4),decay=c(1,2,3),maxit=200,linout=TRUE))
+plot(tune.nnet(O3obs~.,data=datappr,size=4:5,decay=1:10))
+```
+
+
+```{r}
+nnet.reg=nnet(O3obs~.,data=datappr,size=3,decay=2,linout=TRUE,maxit=200)
+# calcul et graphe des résidus
+fit.nnetr=predict(nnet.reg,data=datappr)
+res.nnetr=fit.nnetr-datappr[,"O3obs"]
+gplot.res(fit.nnetr,res.nnetr,titre="")
+```
+
+Cas de la discrimination
+
+```{r}
+
+# apprentissage
+nnet.dis=nnet(DepSeuil~.,data=datappq,size=5,decay=0) 
+summary(nnet.reg)
+     
+```
+
+
+```{r}
+plot(tune.nnet(DepSeuil~.,data=datappq,size=c(3,4,5),decay=c(0,1,2),maxit=200,linout=FALSE))
+
+```
+
+
+```{r}
+nnet.dis=nnet(DepSeuil~.,data=datappq,size=5,decay=1) 
+
+```
+Prévisions de l'échantillon test
+Erreur de régression
+
+
+```{r}
+# Calcul des prévisions
+pred.nnetr=predict(nnet.reg,newdata=datestr)
+pred.nnetq=predict(nnet.dis,newdata=datestq) 
+# Erreur quadratique moyenne de prévision
+sum((pred.nnetr-datestr[,"O3obs"])^2)/nrow(datestr)
+```
+Erreur de classification (matrice de confusion)
+
+
+```{r}
+# Matrice de confusion pour la prévision du 
+# dépassement de seuil (régression)
+table(pred.nnetr>150,datestr[,"O3obs"]>150)
+```
+
+
+```{r}
+confusionMatrix(as.factor(pred.nnetr>150),as.factor(datestr[,"O3obs"]>150))$table
+
+```
+```{r}
+# Même chose pour la discrimination
+table(pred.nnetq>0.5,datestq[,"DepSeuil"])
+```
+
+Courbes ROC
+
+
+```{r}
+library(ROCR)
+
+
+roclogit <- predict(log.qm.step1, newdata = datestq, type="response")
+predlogit <- prediction(roclogit, datestq[, "DepSeuil"])
+perflogit <- performance(predlogit, "tpr", "fpr")
+```
+
+
+```{r}
+library(ROCR)
+
+
+roclogit <- predict(log.qm.step1, newdata = datestq, type="response")
+predlogit <- prediction(roclogit, datestq[, "DepSeuil"])
+perflogit <- performance(predlogit, "tpr", "fpr")
+
+
+rocnnetr=pred.nnetr/300
+prednnetr=prediction(rocnnetr,datestq$DepSeuil)
+perfnnetr=performance(prednnetr,"tpr","fpr")
+
+rocnnetq=pred.nnetq
+prednnetq=prediction(rocnnetq,datestq$DepSeuil)
+perfnnetq=performance(prednnetq,"tpr","fpr")
+
+# tracer les courbes ROC en les superposant pour mieux comparer
+plot(perflogit,col="blue")
+plot(perfnnetr,col="darkgreen",lty=2,add=TRUE) 
+plot(perfnnetq,col="darkgreen",add=TRUE)  
+legend("right", legend=c("Logit", "Nnetr", "Nnetq"),
+       col=c("blue","darkgreen", "darkgreen"), lty=c(1,2,1), text.font=1,    cex=0.8)
+
+```
+Industrialisation de l'apprentissage
+Calcul parallèle
+
+
+```{r}
+library(doParallel)
+cl <- makeCluster(4)
+registerDoParallel(cl) 
+```
+
+Préparation des données
+
+```{r}
+summary(ozone)
+```
+
+
+```{r}
+library(caret)
+# extraction des données
+# Variable cible
+Y=ozone[,"DepSeuil"]
+# Variables explicatives
+X=ozone[,-c(2,11)]
+# Transformation des facteurs en indicatrices pour utiliser certains algorithmes
+# notamment xgboost
+library(FactoMineR)
+X=data.frame(tab.disjonctif(X[,c(1,4)]),X[,-c(1,4)])
+summary(Y);summary(X)
+```
+
+
+```{r}
+library(caret)
+```
+
+
+```{r}
+
+# indices de l’échantillon d’apprentissage
+xx=11 # Changer cette valeur pour personnaliser l'échantillonnage
+set.seed(xx)
+inTrain = createDataPartition(X[,1],p = 0.8, list = FALSE)
+# Extraction des échantillons
+trainDescr=X[inTrain,]
+testDescr=X[-inTrain,]
+testY=Y[-inTrain]
+trainY=Y[inTrain]
+```
+
+
+```{r}
+# Normalisation calculée sur les paramètres de l'échantillon d'apprentissage
+xTrans=preProcess(trainDescr)
+trainDescr=predict(xTrans,trainDescr)
+# Puis appliquée également à l'échantillon test
+testDescr=predict(xTrans,testDescr)
+# Choix de la validation croisée
+cvControl=trainControl(method="cv",number=10)
+```
+
+Estimation des modèles
+
+```{r}
+
+#1 Régression logistique
+# Attention, la régression logistique sans interaction (linéaire) est estimée ci-dessous
+set.seed(2)
+rlogFit = train(trainDescr, trainY,method = "glmStepAIC", tuneLength = 10,
+                trControl = cvControl, trace=FALSE)
+rlogFit
+     
+```
+
+
+```{r}
+#2 Arbre de décision
+set.seed(2)
+rpartFit = train(trainDescr, trainY, method = "rpart", tuneLength = 10,
+    trControl = cvControl)
+rpartFit
+plot(rpartFit)
+```
+
+
+```{r}
+#3 Réseau de neurones
+set.seed(2)
+nnetFit = train(trainDescr, trainY, method = "nnet", tuneLength = 6,
+                trControl = cvControl, trace=FALSE)
+nnetFit
+plot(nnetFit)
+```
+
+
+```{r}
+#4 Random forest
+set.seed(2)
+rfFit = train(trainDescr, trainY,method = "rf", tuneLength = 8,
+              trControl = cvControl, trace=FALSE)
+rfFit
+plot(rfFit)
+     
+
+```
+
+
+```{r}
+
+#5 Boosting 
+set.seed(2)
+gbmFit = train(trainDescr, trainY,method = "gbm", tuneLength = 8,
+               trControl = cvControl)
+gbmFit
+plot(gbmFit)
+```
+
+
+```{r}
+#6 Extrême gradient boosting
+library(xgboost)
+set.seed(2)
+xgbFit = train(trainDescr, trainY,method = "xgbTree", tuneLength = 6,
+               trControl = cvControl, trace=FALSE)
+xgbFit
+plot(xgbFit)
+```
+
+## Prévision et erreur de test
+```{r}
+models=list(logit=rlogFit,cart=rpartFit,nnet=nnetFit,rf=rfFit,gbm=gbmFit,xgb=xgbFit)
+testPred=predict(models, newdata = testDescr)
+# taux de bien classés
+lapply(testPred,function(x)mean(x==testY))
+
+
+```
+Tracé  des  courbes  ROC  pour  analyser  la spécificité  et  la sensibilité  des  différentes  méthodes.  
+
+```{r}
+options(repr.plot.width = 10, repr.plot.height = 8)
+
+models=list(logit=rlogFit,cart=rpartFit,nnet=nnetFit,rf=rfFit,gbm=gbmFit,xgb=xgbFit)
+testProb=predict(models, newdata = testDescr,type="prob")
+predroc=lapply(testProb,function(x)prediction(x[,1],testY==FALSE))
+perfroc=lapply(predroc,
+function(x)performance(x, "tpr", "fpr"))
+plot(perfroc$logit,col=1)
+plot(perfroc$cart,col=2,add=TRUE)
+plot(perfroc$nnet,col=3,add=TRUE)
+plot(perfroc$rf,col=4,add=TRUE)
+plot(perfroc$gbm,col=5,add=TRUE)
+plot(perfroc$xgb,col=6,add=TRUE)
+legend("bottomright",legend=c("logit","CART","nnet","RF","boost","xgBoost"),col=c(1:6),pch="_")
+```
+
+Validation croisée *Monte Carlo
+```{r}
+# Choisir la liste des méthodes et l’effort d’optimisation
+models=c("gbm","rf","nnet","glmStepAIC","xgbTree")
+noptim=c(6,6,6,6,6)
+# Initialiser le générateur et fixer le nombre d’itérations
+# Changer ces valeurs. Attention au temps de calcul! Être patient!
+Niter=10 ; Init=11  
+# Appel de la fonction définie en annexe
+pred.ozone=pred.autom(X,Y,methodes=models,N=Niter,xinit=Init,size=noptim,type="prob")
+
+```
+
+```{r}
+# Calcul des taux de bien classés
+obs=pred.ozone$obs
+prev.ozone=pred.ozone$pred
+res.ozone=lapply(prev.ozone,function(x)apply((x>0.5)==(obs==1),2,mean))
+# Moyennes des taux de bien classés par méthode
+lapply(res.ozone,mean)
+# distributions des taux de bien classés
+boxplot(data.frame(res.ozone))
+```
+Les commandes suivantes tracent les courbes ROC moyennes.
+
+```{r}
+## Comparaison des méthodes par le
+# tracé des courbes ROC moyennes
+#
+predroc.ozone=lapply(prev.ozone,function(x)prediction(x,obs==1))
+perfroc.ozone=lapply(predroc.ozone,function(x)performance(x,"tpr","fpr"))
+plot(perfroc.ozone$gbm,col=1,lwd=2,avg="vertical")
+plot(perfroc.ozone$rf,col=2,add=TRUE,lwd=2,avg="vertical")
+plot(perfroc.ozone$nnet,add=TRUE,col=3,lwd=1.5,avg="vertical")
+plot(perfroc.ozone$xgbTree,add=TRUE,col=4,lwd=1.5,avg="vertical")
+plot(perfroc.ozone$glmStepAIC,add=TRUE,col=5,lwd=1.5,avg="vertical")
+legend("bottomright",legend=c("boost","RF", "nnet","xgBoost","logit"),col=c(1:5),pch="_")
+```
+
+```{r}
+pred.autom=function(X,Y,p=1/2,methodes=c("knn",
+"rf"),size=c(10,2),xinit=11,N=10,typerr="cv",
+number=4,type="raw") {
+# Fonction de prévision de N échantillons tests
+# par une liste de méthodes de régression
+# ou classification (uniquement 2 classes)
+# Optimisation des paramètres par validation
+# croisée (défaut) ou bootstrap ou... (cf. caret)
+# X : matrice ou frame des variables explicatives
+# Y : variable cible quantitative ou qualitative
+# p : proportion entre apprentissage et test
+# methodes : liste des méthodes de discrimination
+# size : une grille des paramètres à optimiser
+# xinit : générateur de nombres aléatoires
+# N : nombre de réplications apprentissage/test
+# typerr : "cv" ou "boo" ou "oob"
+# number : nombre de répétitions CV ou bootstrap
+# pred : liste des matrices de prévision
+# type d’erreur
+Control=trainControl(method=typerr,number=number)
+# initialisation du générateur
+set.seed(xinit)
+# liste de matrices stockant les prévisions
+# une par méthode
+inTrain=createDataPartition(Y,p=p,list=FALSE)
+ntest=length(Y[-inTrain])
+pred=vector("list",length(methodes))
+names(pred)=methodes
+pred=lapply(pred,function(x)x=matrix(0,
+nrow=ntest,ncol=N))
+obs=matrix(0,ntest,N)
+set.seed(xinit)
+for(i in 1:N) {
+# N itérations
+# indices de l’échantillon d’apprentissage
+inTrain=createDataPartition(Y,p=p,list=FALSE)
+# Extraction des échantillons
+trainDescr=X[inTrain,]
+testDescr=X[-inTrain,]
+trainY=Y[inTrain]
+testY=Y[-inTrain]
+# stockage des observés de testY
+obs[,i]=testY
+# centrage et réduction des variables
+xTrans=preProcess(trainDescr)
+trainDescr=predict(xTrans,trainDescr)
+testDescr=predict(xTrans,testDescr)
+# estimation et optimisation des modèles
+# pour chaque méthode de la liste
+for(j in 1:length(methodes)) {
+# modélisation
+modFit = train(trainDescr, trainY,method = methodes[j], tuneLength = size[j],
+               trControl = Control)
+# prévisions
+if (type=="prob")  pred[[j]][,i]=predict(modFit,
+newdata = testDescr,type=type)[,1]
+else pred[[j]][,i]=predict(modFit,
+newdata = testDescr)
+}}
+list(pred=pred,obs=obs)
+# résultats
+}
+     
+
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
